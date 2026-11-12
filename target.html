@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BESS Target Areas</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  html, body { height:100%; margin:0; font:14px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; color:#1b1f24; background:#fff; }
+  #map { position:absolute; top:67px; left:0; right:0; bottom:0; }
+  @media (max-width: 700px) { #map { top:59px; } }
+  .sk-bar { height:64px; background:#253846; border-bottom:3px solid #FBD707; display:flex; align-items:center; gap:18px; padding:0 20px; color:#fff; box-sizing:border-box; }
+  .sk-bar img { height:38px; display:block; }
+  .sk-tag { font-weight:600; font-size:17px; line-height:1.15; }
+  .sk-tag span { color:#FBD707; }
+  .sk-title { margin-left:auto; font-size:14px; color:#dfe6ec; text-align:right; }
+  @media (max-width: 700px) { .sk-tag { display:none; } .sk-bar { height:56px; } .sk-bar img { height:30px; } .sk-title { font-size:12px; } }
+
+  .box { background:#fff; padding:10px 12px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,.3); max-width:300px; }
+  .box h1 { font-size:15px; margin:0 0 4px; }
+  .box p { margin:4px 0 0; color:#5b6570; font-size:12px; }
+  .legend i { display:inline-block; width:14px; height:12px; margin-right:6px; vertical-align:-1px; border:1px solid #0003; }
+  form { display:flex; gap:6px; margin-top:8px; }
+  input { flex:1; padding:5px 6px; border:1px solid #d9dde3; border-radius:4px; font:inherit; min-width:0; }
+  button { font:inherit; padding:5px 8px; border:1px solid #d9dde3; border-radius:4px; background:#fff; cursor:pointer; }
+  #res { font-size:12px; margin-top:6px; }
+</style>
+</head>
+<body>
+<header class="sk-bar">
+  <img src="solarkal-logo.png" alt="SolarKal">
+  <div class="sk-tag">Solar Made <span>Simple.</span><br>Done <span>Right.</span></div>
+  <div class="sk-title">BESS Target Areas · ComEd 34.5 kV</div>
+</header>
+<div id="map"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+// Fixed screen used for this map (same rule as the internal map defaults).
+const MAX_APPS = 10;
+const BUCKETS = [
+  { k: 'none', label: 'No room (queue exceeds capacity)' },
+  { k: 'b0', label: '0 to 5 MW' },
+  { k: 'b5', label: '5 to 10 MW' },
+  { k: 'b10', label: 'Above 10 MW' },
+];
+function bucketOf(p) {
+  if (p.sub_hc == null) return 'none';
+  const mw = (p.sub_hc - (p.sub_q_kw || 0)) / 1000;
+  return mw < 0 ? 'none' : mw < 5 ? 'b0' : mw <= 10 ? 'b5' : 'b10';
+}
+
+const COL = { green: '#2e9e44', yellow: '#f2c230', grey: '#c9ccd1' };
+const TXT = { green: 'Target area', yellow: 'Target later (feeder full today)', grey: 'Not a target now' };
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = n => n == null ? 'n/a' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
+function tip(p, full) {
+  const s = status(p), free = p.sub_hc == null ? null : p.sub_hc - (p.sub_q_kw || 0);
+  return `<b style="color:${s === 'grey' ? '#555' : COL[s]}">${TXT[s]}</b><br>` +
+    `Feeder ${esc(p.feeder)} · Substation ${esc(p.substation || 'unknown')}${p.county ? ' · ' + esc(p.county) : ''}<br>` +
+    `Substation free capacity: ${fmt(free)} kW (${BUCKETS.find(b => b.k === bucketOf(p)).label}) · ${fmt(p.sub_qc)} applications in queue<br>` +
+    `Feeder PV hosting capacity: ${fmt(p.pv_kw)} kW` + siteLines(p, full);
+}
+function siteLines(p, full) {
+  const s = p.site_list || []; if (!s.length) return '';
+  const show = full ? s : s.slice(0, 5);
+  return `<br><b>Shortlist sites (${s.length}):</b><br>` + show.map(esc).join('<br>') +
+    (!full && s.length > 5 ? `<br><i>and ${s.length - 5} more (click to see all)</i>` : '');
+}
+function status(p) {
+  const pass = p.sub_hc != null && (p.sub_hc - (p.sub_q_kw || 0)) > 0 && (p.sub_qc || 0) <= MAX_APPS;
+  return !pass ? 'grey' : ((p.pv_kw || 0) > 0 ? 'green' : 'yellow');
+}
+
+const map = L.map('map', { preferCanvas: true }).setView([41.85, -88.3], 9);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+
+const panel = L.control({ position: 'topleft' });
+panel.onAdd = () => {
+  const d = L.DomUtil.create('div', 'box legend');
+  d.innerHTML = `<h1>Where to target</h1>` +
+    ['green', 'yellow', 'grey'].map(k => `<i style="background:${COL[k]}"></i>${TXT[k]}`).join('<br>') +
+    `<p>Based on ComEd substation capacity and queue, Oct 2026. Shaded squares are approximate feeder areas; circles mark feeders shown at their substation. Hover for details; click for the full site list. Screen: substation free capacity above 0 and &le; 10 applications.</p>
+     <div style="margin-top:6px;font-weight:600">Substation free capacity</div><div id="buckets"></div>
+     <form id="f"><input id="q" placeholder="Check an address"><button>Go</button></form><div id="res"></div>`;
+  L.DomEvent.disableClickPropagation(d);
+  return d;
+};
+panel.addTo(map);
+map.zoomControl.setPosition('topright');
+
+let FEATS = [], pin = null; const LAYERS = { none: [], b0: [], b5: [], b10: [] };
+function inPoly(ring, x, y) { let c = false; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) { const [xi, yi] = ring[i], [xj, yj] = ring[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; }
+
+const NEAR_MI = 0.5;
+function segDist(px, py, ax, ay, bx, by) { const kx = 51.6, ky = 69; px *= kx; ax *= kx; bx *= kx; py *= ky; ay *= ky; by *= ky;
+  const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy; let u = L2 ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0; u = Math.max(0, Math.min(1, u));
+  return Math.hypot(px - (ax + u * dx), py - (ay + u * dy)); }
+function distToFeat(f, lat, lon) { let m = Infinity;
+  f.geometry.coordinates.forEach(po => { const r = po[0]; for (let i = 0; i < r.length - 1; i++) m = Math.min(m, segDist(lon, lat, r[i][0], r[i][1], r[i + 1][0], r[i + 1][1])); });
+  return m; }
+
+fetch('feeders.geojson').then(r => r.json()).then(fg => {
+  FEATS = fg.features;
+  const order = { grey: 0, yellow: 1, green: 2 };   // draw green on top
+  const cnt = {}; FEATS.forEach(f => { const b = bucketOf(f.properties); cnt[b] = (cnt[b] || 0) + 1; });
+  document.getElementById('buckets').innerHTML = BUCKETS.map(b => `<label style="display:block;font-size:12px"><input type="checkbox" data-b="${b.k}" checked> ${b.label} <span style="color:#5b6570">(${cnt[b.k] || 0})</span></label>`).join('');
+  document.querySelectorAll('#buckets input').forEach(cb => cb.addEventListener('change', () => {
+    LAYERS[cb.dataset.b].forEach(l => cb.checked ? l.addTo(map) : l.remove());
+  }));
+  FEATS.filter(f => f.geometry).sort((a, b) => order[status(a.properties)] - order[status(b.properties)]).forEach(f => {
+    const s = status(f.properties), bk = bucketOf(f.properties);
+    if (f.geometry.type === 'Point') {
+      const [lo, la] = f.geometry.coordinates;
+      const lyr = L.circleMarker([la, lo], { radius: 6, color: '#333', weight: 1, fillColor: COL[s], fillOpacity: .9 }).bindTooltip(tip(f.properties)).bindPopup(tip(f.properties, true), { maxWidth: 360, maxHeight: 320 }).addTo(map);
+      LAYERS[bk].push(lyr);
+    } else {
+      const lyr = L.geoJSON(f, { style: { color: '#555', weight: .4, fillColor: COL[s], fillOpacity: s === 'grey' ? .35 : .7 } }).bindTooltip(tip(f.properties), { sticky: true }).bindPopup(tip(f.properties, true), { maxWidth: 360, maxHeight: 320 }).addTo(map);
+      LAYERS[bk].push(lyr);
+    }
+  });
+});
+
+document.addEventListener('submit', async e => {
+  if (e.target.id !== 'f') return;
+  e.preventDefault();
+  const q = document.getElementById('q').value.trim(), out = document.getElementById('res'); if (!q) return;
+  out.textContent = 'Searching…';
+  try {
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=us&viewbox=-91.6,42.6,-87.0,40.9&q=' + encodeURIComponent(q));
+    const j = await r.json();
+    if (!j.length) { out.textContent = 'Address not found. Try adding the city.'; return; }
+    const lat = +j[0].lat, lon = +j[0].lon;
+    const hits = FEATS.filter(f => f.geometry && f.geometry.type === 'MultiPolygon' && f.geometry.coordinates.some(po => inPoly(po[0], lon, lat))).map(f => status(f.properties));
+    let best = hits.includes('green') ? 'green' : hits.includes('yellow') ? 'yellow' : hits.length ? 'grey' : null;
+    let msg = best ? TXT[best] : '';
+    if (!best) {   // feeder areas are ~1 sq mi approximations: look for one nearby
+      const near = FEATS.filter(f => f.geometry && f.geometry.type === 'MultiPolygon')
+        .map(f => ({ s: status(f.properties), d: distToFeat(f, lat, lon) })).filter(x => x.d <= NEAR_MI);
+      best = ['green', 'yellow', 'grey'].find(s => near.some(x => x.s === s)) || null;
+      if (best) { const dd = Math.min(...near.filter(x => x.s === best).map(x => x.d));
+        msg = `${TXT[best]} (${dd < 0.05 ? 'at the edge' : dd.toFixed(2) + ' mi from the shaded area'}; areas are approximate)`; }
+      else msg = 'Outside the mapped feeder areas (check with the team)';
+    }
+    if (pin) pin.remove();
+    pin = L.marker([lat, lon]).addTo(map).bindPopup(`<b>${esc(j[0].display_name)}</b><br>${esc(msg)}`).openPopup();
+    map.setView([lat, lon], 13);
+    out.textContent = msg;
+  } catch (err) { out.textContent = 'Search failed: ' + err.message; }
+});
+</script>
+</body>
+</html>

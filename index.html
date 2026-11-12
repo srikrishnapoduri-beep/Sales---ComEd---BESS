@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ComEd 34.5 kV Queue Map</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root { --bg:#fff; --panel:#f6f7f9; --ink:#1b1f24; --mute:#5b6570; --line:#d9dde3; --accent:#0b5cad; }
+  * { box-sizing: border-box; }
+  html, body { height:100%; margin:0; font:13px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; color:var(--ink); background:var(--bg); }
+  body { display:flex; flex-direction:column; }
+  #app { display:grid; grid-template-columns: 380px 1fr; flex:1; min-height:0; }
+  .sk-bar { height:64px; background:#253846; border-bottom:3px solid #FBD707; display:flex; align-items:center; gap:18px; padding:0 20px; color:#fff; box-sizing:border-box; }
+  .sk-bar img { height:38px; display:block; }
+  .sk-tag { font-weight:600; font-size:17px; line-height:1.15; }
+  .sk-tag span { color:#FBD707; }
+  .sk-title { margin-left:auto; font-size:14px; color:#dfe6ec; text-align:right; }
+  @media (max-width: 700px) { .sk-tag { display:none; } .sk-bar { height:56px; } .sk-bar img { height:30px; } .sk-title { font-size:12px; } }
+
+  #side { overflow-y:auto; background:var(--panel); border-right:1px solid var(--line); padding:12px 14px 20px; }
+  #map { height:100%; }
+  h1 { font-size:16px; margin:0 0 2px; }
+  .sub { color:var(--mute); margin:0 0 10px; }
+  fieldset { border:1px solid var(--line); border-radius:6px; margin:0 0 10px; padding:8px 10px; background:#fff; }
+  legend { font-weight:600; padding:0 4px; }
+  label { display:block; margin:6px 0 2px; }
+  select, input[type=number] { width:100%; padding:4px 6px; border:1px solid var(--line); border-radius:4px; font:inherit; }
+  .row { display:flex; gap:8px; } .row > div { flex:1; }
+  .chk { display:flex; align-items:center; gap:6px; margin:6px 0 0; }
+  table { border-collapse:collapse; width:100%; background:#fff; }
+  th, td { padding:4px 5px; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  th { cursor:pointer; font-size:11px; color:var(--mute); position:sticky; top:0; background:#fff; }
+  tbody tr { cursor:pointer; } tbody tr:hover { background:#eef4fb; } tr.sel { background:#dcebfa; }
+  .note { color:var(--mute); font-size:12px; margin:8px 0 0; }
+  .legend { background:#fff; padding:8px 10px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,.3); line-height:1.5; }
+  .legend i { display:inline-block; width:14px; height:12px; margin-right:6px; vertical-align:-1px; border:1px solid #0003; }
+  .pop table { font-size:12px; } .pop td, .pop th { padding:2px 4px; }
+  .pop h3 { margin:0 0 4px; font-size:14px; }
+  button { font:inherit; padding:4px 8px; border:1px solid var(--line); border-radius:4px; background:#fff; cursor:pointer; }
+  @media (max-width: 800px) { #app { grid-template-columns:1fr; grid-template-rows: 46% 54%; } #side { border-right:0; border-bottom:1px solid var(--line);} }
+</style>
+</head>
+<body>
+<header class="sk-bar">
+  <img src="solarkal-logo.png" alt="SolarKal">
+  <div class="sk-tag">Solar Made <span>Simple.</span><br>Done <span>Right.</span></div>
+  <div class="sk-title">ComEd 34.5 kV BESS Siting Map · Internal</div>
+</header>
+<div id="app">
+  <aside id="side">
+    <h1>ComEd 34.5 kV queue vs. headroom</h1>
+    <p class="sub" id="meta">Loading…</p>
+
+    <fieldset>
+      <legend>Search</legend>
+      <form id="searchForm" style="display:flex;gap:6px">
+        <input id="q" type="search" placeholder="Address, city, feeder (F0002), substation (S0488), county" style="flex:1;padding:4px 6px;border:1px solid var(--line);border-radius:4px;font:inherit">
+        <button type="submit">Go</button>
+      </form>
+      <p class="note" id="sres">Feeder, substation and county names match locally. Anything else is sent to OpenStreetMap Nominatim as a place search.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Map</legend>
+      <label for="color">Colour feeders by</label>
+      <select id="color">
+        <option value="screen" selected>Substation screen (Oct 2026)</option>
+        <option value="bess_kw">BESS hosting capacity (kW, Jun 2026)</option>
+        <option value="pv_kw">PV hosting capacity (kW, Oct 2026)</option>
+        <option value="q_mw">Queued MW (9/30/2026 queue)</option>
+      </select>
+      <div class="chk"><input type="checkbox" id="showSubs"><label for="showSubs" style="margin:0">Show substations</label></div>
+      <div class="chk"><input type="checkbox" id="showPts" checked><label for="showPts" style="margin:0">Show feeders with no footprint (drawn at substation)</label></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Substation screen (Oct 2026)</legend>
+      <label for="maxApps">Max substation applications in queue</label><input type="number" id="maxApps" value="10" min="0" step="1">
+      <p class="note">Free capacity = substation PV hosting capacity minus substation queue (ComEd map, Oct 2026). A substation passes when free capacity is above 0 and applications are within the limit. Green = passes and feeder has room. Yellow = passes but feeder shows 0 kW. Grey = fails.</p>
+      <div class="chk"><input type="checkbox" id="onlyPass"><label for="onlyPass" style="margin:0">Only feeders whose substation passes</label></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Filters</legend>
+      <label for="county">County</label>
+      <select id="county"></select>
+      <label>Substation free capacity</label>
+      <div id="buckets"></div>
+      <div class="chk"><input type="checkbox" id="hasSites"><label for="hasSites" style="margin:0">Only feeders with BESS shortlist sites</label></div>
+      <p class="note" id="count"></p>
+      <button id="reset">Reset filters</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>Counties (click a row to zoom)</legend>
+      <table id="ctable">
+        <thead><tr>
+          <th data-k="county">County</th><th data-k="match">Match</th><th data-k="feeders">Feeders</th>
+          <th data-k="max_bess_kw">Max BESS kW</th><th data-k="max_pv_kw">Max PV kW</th>
+          <th data-k="q_mw">Queue MW</th><th data-k="sites">Sites</th><th data-k="green">Green</th>
+        </tr></thead><tbody></tbody>
+      </table>
+      <p class="note">Green = feeders coloured green by the substation screen. Match = feeders passing the filters above. Queue MW and counts are for 34.5 kV feeders only. Max, not sum, is used for headroom because feeders on one substation share capacity.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Sources and caveats</legend>
+      <p class="note" style="margin-top:0">Queue projects: ComEd queue snapshot 9/30/2026. Substation screen, substation assignment and PV hosting capacity: ComEd PV Hosting Capacity map, Oct 2026 (queue refresh 9/30/2026), matched by feeder and substation number. Map queue kW can be higher than the 9/30 file for the same projects. BESS and net load are still JUN 2026 (no Oct BESS layer). F2002 is not in the Oct map; F2742, F5920, F5941 are new in Oct and drawn at their substation. Footprints are ~1 sq mi sections from the headroom map; feeders without sections are plotted at their substation. Site counts come from the BESS shortlist (580 sites).</p>
+    </fieldset>
+  </aside>
+  <div id="map"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const COLORS = ['#f0f0f0', '#c6dbef', '#6baed6', '#2171b5', '#08306b'];
+const SCREEN = { green: '#2e9e44', yellow: '#f2c230', grey: '#b8bcc2' };
+const SCALES = {
+  screen:  { label: 'Substation screen (Oct 2026)', unit: '' },
+  bess_kw: { label: 'BESS hosting capacity, Jun 2026 (kW)', cuts: [0, 1000, 3000, 6000], unit: 'kW' },
+  pv_kw:   { label: 'PV hosting capacity, Oct 2026 (kW)', cuts: [0, 2000, 8000, 16000], unit: 'kW' },
+  q_mw:    { label: 'Queued MW on feeder', cuts: [0, 5, 15, 30], unit: 'MW' },
+};
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = (n, d = 0) => n == null ? 'n/a' : Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
+
+let FEATS = [], SUBS = null, COUNTIES = [], state = { sortK: 'match', sortDir: -1, selCounty: '' };
+
+const map = L.map('map', { preferCanvas: true }).setView([41.85, -88.3], 8);
+const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 18, attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+const baseControl = L.control.layers({ 'OpenStreetMap': osm }, {}, { position: 'topright', collapsed: false }).addTo(map);
+let feederLayer = L.layerGroup().addTo(map), subLayer = L.layerGroup();
+
+function bin(v, cuts) {
+  v = v || 0;
+  if (v <= cuts[0]) return 0;
+  for (let i = 1; i < cuts.length; i++) if (v <= cuts[i]) return i;
+  return cuts.length;
+}
+
+const BUCKETS = [
+  { k: 'none', label: 'No room (queue exceeds capacity)' },
+  { k: 'b0', label: '0 to 5 MW' },
+  { k: 'b5', label: '5 to 10 MW' },
+  { k: 'b10', label: 'Above 10 MW' },
+];
+function bucketOf(p) {
+  if (p.sub_hc == null) return 'none';
+  const mw = (p.sub_hc - (p.sub_q_kw || 0)) / 1000;
+  return mw < 0 ? 'none' : mw < 5 ? 'b0' : mw <= 10 ? 'b5' : 'b10';
+}
+function subFree(p) { return p.sub_hc == null ? null : p.sub_hc - (p.sub_q_kw || 0); }
+function subPass(p) {
+  const fr = subFree(p);
+  return fr != null && fr > 0 && (p.sub_qc || 0) <= (+$('maxApps').value || 0);
+}
+function status(p) { return !subPass(p) ? 'grey' : ((p.pv_kw || 0) > 0 ? 'green' : 'yellow'); }
+const STATUS_TXT = { green: 'Substation passes, feeder has room', yellow: 'Substation passes, feeder full (0 kW)', grey: 'Substation fails' };
+
+function passes(p) {
+  if ($('onlyPass').checked && !subPass(p)) return false;
+  if (state.selCounty && (p.county || 'No county') !== state.selCounty) return false;
+  if (!$('bk_' + bucketOf(p)).checked) return false;
+  if ($('hasSites').checked && !p.sites) return false;
+  return true;
+}
+
+function popup(p) {
+  const rows = p.projects.map(r => `<tr><td>${esc(r.id)}</td><td>${esc(r.source)}</td><td>${fmt(r.mw, 2)}</td><td>${esc(r.status)}</td><td>${fmt(r.fdr_pos)}</td></tr>`).join('');
+  return `<div class="pop"><h3>${esc(p.feeder)} <small>(${esc(p.line_id || 'no line ID')})</small></h3>
+    Substation: ${esc(p.substation || 'unknown')}${p.substation_src && p.substation_src !== 'master' ? ` <small>(from ${esc(p.substation_src)})</small>` : ''}<br>
+    County: ${esc(p.county || 'unknown')} · Shortlist sites: ${fmt(p.sites)}<br>
+    <b>Screen: <span style="color:${SCREEN[status(p)] === SCREEN.grey ? '#666' : SCREEN[status(p)]}">${STATUS_TXT[status(p)]}</span></b><br>
+    Substation (Oct 2026): <b>${BUCKETS.find(b => b.k === bucketOf(p)).label}</b> · capacity ${fmt(p.sub_hc)} kW · queue ${fmt(p.sub_q_kw)} kW · ${fmt(p.sub_qc)} applications · free ${fmt(subFree(p))} kW · ratio ${esc(p.sub_ratio ?? 'n/a')}<br>
+    Feeder (Oct 2026): PV ${fmt(p.pv_kw)} kW${p.in_oct ? '' : ' <small>(not in Oct map; Jul value)</small>'} · map queue ${fmt(p.fdr_q_kw_map)} kW, ${fmt(p.fdr_qc_map)} applications · ratio ${esc(p.feeder_ratio ?? 'n/a')}<br>
+    BESS ${fmt(p.bess_kw)} kW <small>(Jun 2026)</small> · PV Jul ${fmt(p.pv_kw_jul)} kW · Net load ${fmt(p.load_kw)} kW<br>
+    Queue: ${p.q_n} projects, ${fmt(p.q_mw, 2)} MW (storage-bearing ${fmt(p.q_storage_mw, 2)}, solar-bearing ${fmt(p.q_solar_mw, 2)}; Solar/Storage counted in both)
+    ${p.geom_src === 'substation' ? '<br><small>No feeder footprint in source data; point is the substation.</small>' : ''}
+    ${(p.site_list || []).length ? `<br><b>Shortlist sites (${p.site_list.length}):</b><br>${p.site_list.map(esc).join('<br>')}` : ''}
+    ${p.q_n ? `<table><tr><th>Project</th><th>Source</th><th>MW</th><th>Status</th><th>Pos</th></tr>${rows}</table>` : ''}</div>`;
+}
+
+function draw() {
+  const sc = SCALES[$('color').value], key = $('color').value;
+  feederLayer.clearLayers();
+  const shown = FEATS.filter(f => passes(f.properties));
+  const showPts = $('showPts').checked;
+  const bounds = [];
+  shown.forEach(f => {
+    const p = f.properties, col = key === 'screen' ? SCREEN[status(p)] : COLORS[bin(p[key], sc.cuts)];
+    let lyr;
+    if (f.geometry && f.geometry.type === 'Point') {
+      if (!showPts) return;
+      const [lo, la] = f.geometry.coordinates;
+      lyr = L.circleMarker([la, lo], { radius: 6, color: '#333', weight: 1.5, dashArray: '2 2', fillColor: col, fillOpacity: .9 });
+      bounds.push([la, lo]);
+    } else if (f.geometry) {
+      lyr = L.geoJSON(f, { style: { color: '#34495e', weight: .6, fillColor: col, fillOpacity: .75 } });
+      bounds.push(lyr.getBounds());
+    } else return;
+    lyr.bindPopup(() => popup(p), { maxWidth: 420, maxHeight: 420 });
+    lyr.bindTooltip(key === 'screen' ? `${p.feeder} · ${p.substation || ''} · ${STATUS_TXT[status(p)]}` : `${p.feeder} · ${sc.label.split(' (')[0]}: ${fmt(p[key], 1)} ${sc.unit}`, { sticky: true });
+    feederLayer.addLayer(lyr);
+  });
+  const unplaced = shown.filter(f => !f.geometry).length;
+  $('count').textContent = `${shown.length} of ${FEATS.length} feeders match` + (unplaced ? ` (${unplaced} have no location data and cannot be drawn)` : '');
+  buildLegend(sc);
+  buildTable();
+  return bounds;
+}
+
+let legend;
+function buildLegend(sc) {
+  if (legend) legend.remove();
+  legend = L.control({ position: 'bottomright' });
+  legend.onAdd = () => {
+    const d = L.DomUtil.create('div', 'legend'), c = sc.cuts;
+    if (!c) {
+      d.innerHTML = `<b>${sc.label}</b><br>` + ['green', 'yellow', 'grey'].map(k => `<i style="background:${SCREEN[k]}"></i>${STATUS_TXT[k]}`).join('<br>') +
+        `<br><small>Free capacity &gt; 0 and applications &le; ${fmt(+$('maxApps').value)}</small>` +
+        `<br><i style="background:#fff;border:1.5px dashed #333;border-radius:50%"></i>At substation (no footprint)`;
+      return d;
+    }
+    const labels = [`0`, `1 to ${fmt(c[1])}`, `${fmt(c[1])} to ${fmt(c[2])}`, `${fmt(c[2])} to ${fmt(c[3])}`, `> ${fmt(c[3])}`];
+    d.innerHTML = `<b>${sc.label}</b><br>` + COLORS.map((col, i) => `<i style="background:${col}"></i>${labels[i]}`).join('<br>') +
+      `<br><i style="background:#fff;border:1.5px dashed #333;border-radius:50%"></i>At substation (no footprint)`;
+    return d;
+  };
+  legend.addTo(map);
+}
+
+function buildTable() {
+  // match count ignores the county dropdown so every county stays comparable
+  const saved = state.selCounty; state.selCounty = '';
+  const m = {}, gr = {}; FEATS.forEach(f => { const c = f.properties.county || 'No county';
+    if (passes(f.properties)) m[c] = (m[c] || 0) + 1;
+    if (status(f.properties) === 'green') gr[c] = (gr[c] || 0) + 1; });
+  state.selCounty = saved;
+  const rows = COUNTIES.map(c => ({ ...c, match: m[c.county] || 0, green: gr[c.county] || 0 }));
+  const k = state.sortK, dir = state.sortDir;
+  rows.sort((a, b) => (k === 'county' ? a.county.localeCompare(b.county) : a[k] - b[k]) * dir || a.county.localeCompare(b.county));
+  const tb = document.querySelector('#ctable tbody'); tb.innerHTML = '';
+  rows.forEach(c => {
+    const tr = document.createElement('tr');
+    if (c.county === state.selCounty) tr.className = 'sel';
+    tr.innerHTML = `<td>${esc(c.county)}</td><td>${c.match}</td><td>${c.feeders}</td><td>${fmt(c.max_bess_kw)}</td><td>${fmt(c.max_pv_kw)}</td><td>${fmt(c.q_mw, 1)}</td><td>${c.sites}</td><td>${c.green}</td>`;
+    tr.onclick = () => { state.selCounty = state.selCounty === c.county ? '' : c.county; $('county').value = state.selCounty; refresh(true); };
+    tb.appendChild(tr);
+  });
+}
+
+function refresh(fit) {
+  const b = draw();
+  if (fit && b.length) {
+    const g = L.latLngBounds([]);
+    b.forEach(x => g.extend(x));  // x is a LatLngBounds or a [lat, lon] pair
+    map.fitBounds(g.pad(0.1), { maxZoom: 11 });
+  }
+}
+
+document.querySelectorAll('#ctable th').forEach(th => th.onclick = () => {
+  const k = th.dataset.k; state.sortDir = state.sortK === k ? -state.sortDir : (k === 'county' ? 1 : -1); state.sortK = k; buildTable();
+});
+['color', 'showPts', 'hasSites', 'maxApps', 'onlyPass'].forEach(id => $(id).addEventListener('input', () => refresh(false)));
+$('county').onchange = e => { state.selCounty = e.target.value; refresh(true); };
+$('showSubs').onchange = e => e.target.checked ? subLayer.addTo(map) : map.removeLayer(subLayer);
+$('reset').onclick = () => { $('onlyPass').checked = false; BUCKETS.forEach(b => $('bk_' + b.k).checked = true); $('hasSites').checked = false; state.selCounty = ''; $('county').value = ''; refresh(true); };
+
+
+// ---- search ----
+let pin = null;
+function inPoly(ring, x, y) { let c = false; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) { const [xi, yi] = ring[i], [xj, yj] = ring[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; }
+function segDist(px, py, ax, ay, bx, by) { const kx = 51.6, ky = 69; px *= kx; ax *= kx; bx *= kx; py *= ky; ay *= ky; by *= ky;
+  const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy; let u = L2 ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0; u = Math.max(0, Math.min(1, u));
+  return Math.hypot(px - (ax + u * dx), py - (ay + u * dy)); }
+function distToFeat(f, lat, lon) { let m = Infinity;
+  f.geometry.coordinates.forEach(po => { const r = po[0]; for (let i = 0; i < r.length - 1; i++) m = Math.min(m, segDist(lon, lat, r[i][0], r[i][1], r[i + 1][0], r[i + 1][1])); });
+  return m; }
+function feederAt(lat, lon) {
+  return FEATS.filter(f => f.geometry && f.geometry.type === 'MultiPolygon' && f.geometry.coordinates.some(po => inPoly(po[0], lon, lat))).map(f => f.properties);
+}
+function nearestFeeders(lat, lon, n) {
+  return FEATS.filter(f => f.properties.clat != null).map(f => ({ p: f.properties, d: Math.hypot((f.properties.clat - lat) * 69, (f.properties.clon - lon) * 51) }))
+    .sort((a, b) => a.d - b.d).slice(0, n);
+}
+function dropPin(lat, lon, label) {
+  if (pin) pin.remove();
+  const inside = feederAt(lat, lon);
+  const near = nearestFeeders(lat, lon, 3);
+  const edge = FEATS.filter(f => f.geometry && f.geometry.type === 'MultiPolygon').map(f => ({ p: f.properties, d: distToFeat(f, lat, lon) }))
+    .filter(x => x.d <= 0.5).sort((a, b) => a.d - b.d).slice(0, 5);
+  const line = f => `${esc(f.feeder)} (${STATUS_TXT[status(f)]}; substation ${esc(f.substation || '?')}, PV ${fmt(f.pv_kw)} kW, queue ${fmt(f.q_mw, 1)} MW, ${esc(f.county || 'no county')})`;
+  pin = L.marker([lat, lon]).addTo(map).bindPopup(`<div class="pop"><h3>${esc(label)}</h3>` +
+    (inside.length ? `Inside 34.5 kV feeder section: <br>${inside.map(line).join('<br>')}` : 'Not inside any mapped 34.5 kV feeder section.') +
+    (!inside.length && edge.length ? `<br><br>Feeder sections within 0.5 mi (sections are ~1 sq mi approximations):<br>${edge.map(x => `${line(x.p)}, ${x.d.toFixed(2)} mi`).join('<br>')}` : '') +
+    `<br><br>Nearest by section centre or substation point:<br>${near.map(x => `${line(x.p)}, ${x.d.toFixed(1)} mi`).join('<br>')}</div>`, { maxWidth: 420 }).openPopup();
+  map.setView([lat, lon], Math.max(map.getZoom(), 12));
+}
+$('searchForm').onsubmit = async e => {
+  e.preventDefault();
+  const q = $('q').value.trim(), out = $('sres'); if (!q) return;
+  const up = q.toUpperCase();
+  const fd = FEATS.find(f => f.properties.feeder === up || (f.properties.line_id || '').toUpperCase() === up);
+  if (fd) {
+    const p = fd.properties;
+    if (p.clat == null) { out.textContent = `${p.feeder} is in the data but has no location.`; return; }
+    state.selCounty = ''; $('county').value = ''; refresh(false);
+    map.setView([p.clat, p.clon], 12); out.textContent = `Feeder ${p.feeder}, substation ${p.substation || 'unknown'}.`;
+    L.popup({ maxWidth: 420 }).setLatLng([p.clat, p.clon]).setContent(popup(p)).openOn(map); return;
+  }
+  const sb = SUBS.features.find(f => f.properties.substation === up);
+  if (sb) { const [lo, la] = sb.geometry.coordinates; $('showSubs').checked = true; subLayer.addTo(map); map.setView([la, lo], 12); out.textContent = `Substation ${up}.`; return; }
+  const onSub = FEATS.filter(f => f.properties.substation === up);
+  if (onSub.length) {
+    const loc = onSub.filter(f => f.properties.clat != null);
+    out.textContent = `Substation ${up} has no coordinates in the source data. It serves ${onSub.length} 34.5 kV feeder(s): ${onSub.map(f => f.properties.feeder).join(', ')}.`;
+    if (loc.length) { const g = L.latLngBounds(loc.map(f => [f.properties.clat, f.properties.clon])); map.fitBounds(g.pad(0.3), { maxZoom: 11 }); }
+    return;
+  }
+  const cn = COUNTIES.find(c => c.county.toLowerCase() === q.toLowerCase().replace(/ county$/, ''));
+  if (cn) { state.selCounty = cn.county; $('county').value = cn.county; refresh(true); out.textContent = `County: ${cn.county}.`; return; }
+  out.textContent = 'Searching…';
+  try {
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=us&viewbox=-91.6,42.6,-87.0,40.9&q=' + encodeURIComponent(q));
+    const j = await r.json();
+    if (!j.length) { out.textContent = 'No match found. Try a street address with city, or a feeder or substation code.'; return; }
+    out.textContent = j[0].display_name; dropPin(+j[0].lat, +j[0].lon, j[0].display_name);
+  } catch (err) { out.textContent = 'Place search failed: ' + err.message; }
+};
+
+Promise.all(['feeders.geojson', 'substations.geojson', 'counties.json'].map(u => fetch(u).then(r => { if (!r.ok) throw new Error(u + ' ' + r.status); return r.json(); })))
+.then(([fg, sg, cj]) => {
+  FEATS = fg.features; SUBS = sg; COUNTIES = cj.counties;
+  const withGeom = FEATS.filter(f => f.geometry).length;
+  $('meta').textContent = `Queue snapshot ${cj.queue_snapshot} · hosting capacity Oct 2026 · ${FEATS.length} feeders at 34.5 kV`;
+  const cnt = {}; FEATS.forEach(f => { const b = bucketOf(f.properties); cnt[b] = (cnt[b] || 0) + 1; });
+  $('buckets').innerHTML = BUCKETS.map(b => `<div class="chk"><input type="checkbox" id="bk_${b.k}" checked><label for="bk_${b.k}" style="margin:0">${b.label} <span style="color:var(--mute)">(${cnt[b.k] || 0} feeders)</span></label></div>`).join('');
+  BUCKETS.forEach(b => $('bk_' + b.k).addEventListener('input', () => refresh(false)));
+  $('county').innerHTML = '<option value="">All counties</option>' + COUNTIES.map(c => `<option>${esc(c.county)}</option>`).join('');
+  L.geoJSON(SUBS, {
+    pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 5, color: '#7a1f1f', weight: 1.5, fillColor: '#e6a1a1', fillOpacity: .9 })
+  }).eachLayer(l => {
+    const p = l.feature.properties;
+    l.bindPopup(`<div class="pop"><h3>${esc(p.substation)}</h3>34.5 kV feeders: ${esc(p.feeders_345.join(', '))}<br>Oct 2026 map: capacity ${fmt(p.sub_hc)} kW · queue ${fmt(p.sub_q_kw)} kW · ${fmt(p.sub_qc)} applications · free ${fmt(p.sub_hc == null ? null : p.sub_hc - p.sub_q_kw)} kW<br>Location confidence: ${esc(p.loc_conf)}<br>Queue on this substation, all feeder voltages: ${p.q_n_all} projects, ${fmt(p.q_mw_all, 1)} MW</div>`);
+    subLayer.addLayer(l);
+  });
+  refresh(true);
+}).catch(e => { $('meta').textContent = 'Failed to load data: ' + e.message + '. Serve over http (python3 -m http.server).'; });
+</script>
+</body>
+</html>
